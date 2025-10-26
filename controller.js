@@ -46,7 +46,7 @@ const getCountries = async (req, res) => {
 
     // Add sorting by GDP descending if specified
     if (sort === "gdp_desc") {
-      sql += " ORDER BY estimated_gdp DESC";
+      sql += " ORDER BY estimated_gdp IS NULL ASC, estimated_gdp DESC";
     }
 
     // Execute the query with parameters
@@ -244,7 +244,7 @@ const getStatus = async (req, res) => {
     }
 
     const last_refreshed_at = row[0].last_refreshed_at;
-    const result = { total: row.length, last_refreshed_at };
+    const result = { total_countries: row.length, last_refreshed_at };
 
     return res.status(200).json(result);
   } catch (err) {
