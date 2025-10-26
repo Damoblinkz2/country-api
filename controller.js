@@ -15,6 +15,13 @@ const getCountries = async (req, res) => {
     // Extract query parameters for filtering and sorting
     const { region, currency, sort } = req.query;
 
+    // Validate sort parameter
+    if (sort && sort !== "gdp_desc") {
+      return res
+        .status(400)
+        .json({ error: "Invalid sort parameter. Use 'gdp_desc' or omit." });
+    }
+
     // Base SQL query to select all countries
     let sql = "SELECT * FROM countries";
     const conditions = [];
@@ -49,7 +56,7 @@ const getCountries = async (req, res) => {
     res.status(200).json(rows);
   } catch (err) {
     // Log the error and return a generic error response
-    console.error(err);
+    console.error("Error in getCountries:", err);
     res.status(500).json({ error: "Database query failed" });
   }
 };
@@ -85,15 +92,50 @@ const postCountries = async (req, res) => {
     console.log("✅ Table created successfully:", result);
 
     // Fetch countries data from REST Countries API
-    const response = await fetch(
-      "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies"
-    );
+    let response;
+    try {
+      response = await fetch(
+        "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies"
+      );
+      if (!response.ok) {
+        throw new Error(
+          `REST Countries API error: ${response.status} ${response.statusText}`
+        );
+      }
+    } catch (fetchError) {
+      console.error("Failed to fetch countries data:", fetchError);
+      return res
+        .status(502)
+        .json({ error: "Failed to fetch countries data from external API" });
+    }
+
     // Fetch exchange rates from Exchange Rate API
-    const exchangeInUSD = await fetch(`https://open.er-api.com/v6/latest/USD`);
+    let exchangeInUSD;
+    try {
+      exchangeInUSD = await fetch(`https://open.er-api.com/v6/latest/USD`);
+      if (!exchangeInUSD.ok) {
+        throw new Error(
+          `Exchange Rate API error: ${exchangeInUSD.status} ${exchangeInUSD.statusText}`
+        );
+      }
+    } catch (fetchError) {
+      console.error("Failed to fetch exchange rates:", fetchError);
+      return res
+        .status(502)
+        .json({ error: "Failed to fetch exchange rates from external API" });
+    }
 
     // Parse JSON responses
-    const countriesData = await response.json();
-    const exchangeRateData = (await exchangeInUSD.json()).rates;
+    let countriesData, exchangeRateData;
+    try {
+      countriesData = await response.json();
+      exchangeRateData = (await exchangeInUSD.json()).rates;
+    } catch (parseError) {
+      console.error("Failed to parse API responses:", parseError);
+      return res
+        .status(502)
+        .json({ error: "Invalid response from external APIs" });
+    }
 
     // Loop through each country and process data
     for (let i = 0; i < countriesData.length; i++) {
@@ -194,13 +236,21 @@ const postCountries = async (req, res) => {
  * @returns {JSON} - Object with total count of countries.
  */
 const getStatus = async (req, res) => {
-  const [row] = await pool.query("SELECT * FROM countries");
+  try {
+    const [row] = await pool.query("SELECT * FROM countries");
 
-  const last_refreshed_at = row[0].last_refreshed_at;
+    if (row.length === 0) {
+      return res.status(200).json({ total: 0, last_refreshed_at: null });
+    }
 
-  const result = { total: row.length, last_refreshed_at };
+    const last_refreshed_at = row[0].last_refreshed_at;
+    const result = { total: row.length, last_refreshed_at };
 
-  return res.status(200).json(result);
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error("Error in getStatus:", err);
+    res.status(500).json({ error: "Database query failed" });
+  }
 };
 
 /**
@@ -212,12 +262,21 @@ const getStatus = async (req, res) => {
 const getCountry = async (req, res) => {
   try {
     const name = req.params.name;
+    if (!name) {
+      return res.status(400).json({ error: "Country name is required" });
+    }
+
     const [row] = await pool.query("SELECT * FROM countries WHERE name = ?", [
       name,
     ]);
-    res.json(row);
+
+    if (row.length === 0) {
+      return res.status(404).json({ error: "Country not found" });
+    }
+
+    res.json(row[0]);
   } catch (err) {
-    console.error(err);
+    console.error("Error in getCountry:", err);
     res.status(500).json({ error: "Database query failed" });
   }
 };
@@ -231,10 +290,21 @@ const getCountry = async (req, res) => {
 const deleteCountry = async (req, res) => {
   try {
     const name = req.params.name;
-    await pool.query("DELETE FROM countries WHERE name = ?", [name]);
+    if (!name) {
+      return res.status(400).json({ error: "Country name is required" });
+    }
+
+    const [result] = await pool.query("DELETE FROM countries WHERE name = ?", [
+      name,
+    ]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Country not found" });
+    }
+
     res.json({ message: "Country deleted" });
   } catch (err) {
-    console.error(err);
+    console.error("Error in deleteCountry:", err);
     res.status(500).json({ error: "Database query failed" });
   }
 };
@@ -246,17 +316,27 @@ const deleteCountry = async (req, res) => {
  * @returns {Stream} - PNG image stream or error message.
  */
 const getImg = (req, res) => {
-  const imagePath = path.join(process.cwd(), "cache", "summary.png");
+  try {
+    const imagePath = path.join(process.cwd(), "cache", "summary.png");
 
-  if (!fs.existsSync(imagePath)) {
-    return res.status(404).json({ error: "Summary image not found" });
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ error: "Summary image not found" });
+    }
+
+    // Tell the browser (or Thunder Client) this is an image
+    res.setHeader("Content-Type", "image/png");
+
+    // Send the actual file
+    const stream = fs.createReadStream(imagePath);
+    stream.on("error", (err) => {
+      console.error("Error streaming image:", err);
+      res.status(500).json({ error: "Failed to stream image" });
+    });
+    stream.pipe(res);
+  } catch (err) {
+    console.error("Error in getImg:", err);
+    res.status(500).json({ error: "Internal server error" });
   }
-
-  // Tell the browser (or Thunder Client) this is an image
-  res.setHeader("Content-Type", "image/png");
-
-  // Send the actual file
-  fs.createReadStream(imagePath).pipe(res);
 };
 
 module.exports = {

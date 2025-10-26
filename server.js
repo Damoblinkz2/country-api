@@ -39,6 +39,12 @@ app.route("/status").get(getStatus);
 app.route("/countries/:name").get(getCountry).delete(deleteCountry);
 app.route("/currencies/image").get(getImg);
 
+// Global error-handling middleware
+app.use((err, req, res, next) => {
+  console.error("Unhandled error:", err);
+  res.status(500).json({ error: "Internal server error" });
+});
+
 /**
  * Starts the Express server.
  */
